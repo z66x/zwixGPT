@@ -5,13 +5,16 @@ torch.manual_seed(66)
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # hyper-parameters
-batch_size = 32
-block_size = 8
-n_emb = 32
-eval_interval = 200
-eval_iters = 500
-max_steps = 10000
-learning_rate = 6e-3
+batch_size = 64
+block_size = 256
+n_emb = 384
+n_head = 6
+dropout_rate = 0.2
+n_layer = 6
+eval_interval = 500
+eval_iters = 66
+max_steps = 5000
+learning_rate = 6e-4
 
 with open('input.txt', 'r', encoding='utf-8') as f:
     text = f.read()
@@ -68,7 +71,8 @@ class head(nn.Module):
         self.query = nn.Linear(n_emb, head_size, bias=False)
         self.value = nn.Linear(n_emb, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-
+        self.dropout = nn.Dropout(dropout_rate)
+        
     def forward(self, x):
         B,T,C = x.shape
         k = self.key(x) # (B,T,head_size)
@@ -78,15 +82,56 @@ class head(nn.Module):
         wei = q @ k.transpose(-2, -1) * C**-0.5
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
         wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
         out = wei @ v # (B,T,head_size)
         return out
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(num_heads * head_size, n_emb)
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def forward(self, x):
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.dropout(self.proj(out))
+        return out
+
+class FeedForward(nn.Module):
+    def __init__(self, n_emb):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_emb, 4 * n_emb),
+            nn.ReLU(),
+            nn.Linear(4 * n_emb, n_emb),
+            nn.Dropout(dropout_rate)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class Block(nn.Module):
+    def __init__(self, n_emb, n_head):
+        super().__init__()
+        head_size = n_emb // n_head
+        self.sa_head = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedForward(n_emb)
+        self.ln1 = nn.LayerNorm(n_emb)
+        self.ln2 = nn.LayerNorm(n_emb)
+
+    def forward(self, x):
+        x = x + self.sa_head(self.ln1(x))
+        x = x +self.ffwd(self.ln2(x))
+        return x
 
 class BigramLangModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_embedding_table = nn.Embedding(voc_size, n_emb)
         self.position_embedding_table = nn.Embedding(block_size, n_emb)
-        self.sa_head = head(n_emb)
+        self.blocks = nn.Sequential(*[Block(n_emb, n_head=n_head) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_emb)
         self.lm_head = nn.Linear(n_emb, voc_size)
 
     def forward(self, idx, targets=None):
@@ -94,7 +139,8 @@ class BigramLangModel(nn.Module):
         tok_emb = self.token_embedding_table(idx)
         pos_emb = self.position_embedding_table(torch.arange(T, device=device))
         final_emb = tok_emb + pos_emb
-        final_emb = self.sa_head(final_emb)
+        final_emb = self.blocks(final_emb)
+        final_emb = self.ln_f(final_emb)
         logits = self.lm_head(final_emb)
 
         if targets is None:
@@ -123,8 +169,9 @@ class BigramLangModel(nn.Module):
 
 model = BigramLangModel()
 model = model.to(device)
-
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+print("model initialized and loaded, roger that!")
+
 for step in range(max_steps):
     if step % eval_interval == 0:
         losses = estimate_loss()
@@ -137,5 +184,9 @@ for step in range(max_steps):
     loss.backward()
     optimizer.step()
 
+torch.save(model.state_dict(), 'shakespeare_from_temu.pth')
+print("cargo Secured, neural state extracted and locked as 'shakespeare_from_temu.pth'!")
+
+print("shakepeare starts to yap...\n")
 context = torch.zeros((1, 1), dtype=torch.long).to(device)
 print(decode(model.generate(idx = context, max_new_tokens = 660)[0].tolist()))
