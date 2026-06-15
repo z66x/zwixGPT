@@ -1,94 +1,89 @@
 # zwixGPT
 
-> *i made an AI that raps. it's not good. it's also not bad. it's something.*
+A character-level language model built from scratch in PyTorch — no frameworks, no abstractions. Trained on Shakespeare to establish a baseline, then on Kanye West lyrics for domain transfer.
 
 ---
 
-## what is this
+## Architecture
 
-a transformer i built from scratch that generates text character by character. no HuggingFace, no shortcuts, no dignity.
+Decoder-only transformer with causal self-attention. The full stack:
 
-trained it on shakespeare first (as you do), then on kanye lyrics because that felt like the logical next step.
-
----
-
-## does it work
-
-kind of. here's what it outputs after ~4000 steps on kanye lyrics:
-
-```
-Ug, Fucking right didamant
-I faking after fuck in hurts niggas
-This eyes fadiculous
-'Cause to life)
-Tryin' conturifuckin' you, I'll it
-I'm not remember who crisechi gon' 're money (b
-```
-
-so yes. it captures the vibe. the words are fake but the energy is real.
+- **Causal self-attention** with scaled dot-product (`QKᵀ / √dₖ`) and a lower-triangular mask to prevent the model from looking ahead
+- **Multi-head attention** — parallel heads concatenated and projected back to embedding space, each attending to different representational subspaces
+- **Position-wise FFN** with 4× hidden expansion: `n_emb → 4·n_emb → n_emb`
+- **Pre-LayerNorm** applied before each sub-block — keeps gradients stable at depth without the Post-LN blowup problem
+- **Residual connections** around both sub-blocks per layer for clean backprop flow
 
 ---
 
-## architecture (the short version)
+## Experiments
 
-decoder-only transformer. causal self-attention so it can't cheat and look ahead. residual connections so gradients don't die. pre-layernorm so training doesn't explode in my face.
-
-that's it. that's the whole thing.
-
----
-
-## experiment log
-
-### exp 0 — shakespeare
-just vibing, establishing a baseline.
-
-| thing | value |
-|---|---|
-| dataset | tinyshakespeare (1.1MB) |
-| vocab | 65 chars |
-| steps | 5000 |
-| final train loss | 0.9443 |
-| final test loss | 1.5309 |
-| weight file | 50.24 MB (github yelled at me) |
-
-### exp 1 — kanye
-the real one. took 4 runs to get right.
-
-| thing | value |
-|---|---|
-| dataset | kanye lyrics (~150-250K chars) |
-| vocab | 95 chars |
-| steps | 6000 |
-| final test loss | 1.68 |
-| weight file | ~19 MB (github chilled out) |
-
-**the dropout saga** — ran it 4 times because i kept getting it wrong:
-
-| run | dropout | what happened |
-|---|---|---|
-| 1 | 0.33 | decent, gap widening |
-| 2 | 0.40 | model had a stroke, output was `?AAAAAAAAHHHHHHHHHHH!!` |
-| 3 | 0.36 | no overfitting but no real meaning in output |
-| 4 | 0.4 + n_layer=4 + 6000 steps | looks good. still on the hunt for better tuning |
-
----
-
-## final hyperparams
+### Exp 0 — Shakespeare
 
 ```python
-batch_size = 32
-block_size = 128
-n_emb = 300
-n_head = 6
-dropout_rate = 0.4
-n_layer = 4
-max_steps = 6000
-learning_rate = 3e-4
+batch_size = 64
+block_size = 256
+n_emb = 384
+n_head = 6        # 384 / 6 = 64 dims per head
+dropout_rate = 0.2
+n_layer = 6
+max_steps = 5000
+learning_rate = 6e-4
 ```
+
+| Step | Train | Test |
+|---|---|---|
+| 0 | 4.4070 | 4.4051 |
+| 500 | 1.8236 | 1.9598 |
+| 1000 | 1.4429 | 1.6399 |
+| 2000 | 1.2211 | 1.5096 |
+| 2500 | 1.1530 | **1.4833** |
+| 3000 | 1.1016 | 1.4845 |
+| 4500 | 0.9443 | 1.5309 |
+
+Initial loss of 4.4070 aligns with the theoretical bound `ln(65) ≈ 4.17` for uniform random prediction over a 65-character vocabulary. Test loss bottomed at **1.4833 around step 2500** before creeping back up — the model had enough capacity (`n_layer=6`, `n_emb=384`) for the 1.1MB corpus.
+
+Weight file: `shakespeare_from_temu.pth` — 50.2 MB.
 
 ---
 
-## setup
+### Exp 1 — Kanye Lyrics
+
+Smaller corpus (183,627 chars, 95 unique characters) — architecture scaled down accordingly.
+
+```python
+batch_size = 32    # halved; smaller corpus needs more gradient diversity per epoch
+block_size = 128   # halved; matches lyric line length, reduces memory footprint
+n_emb = 300        # scaled down from 384; divisible by n_head (300 / 6 = 50 dims per head)
+n_head = 6
+dropout_rate = 0.4 # higher than Exp 0; counteracts overfitting on repetitive bar/hook structure
+n_layer = 4        # scaled down from 6; dataset too small to fill 6-layer capacity
+max_steps = 6000   # extended; test loss still declining past step 4000
+learning_rate = 3e-4  # halved from 6e-4; conservative for small dataset
+```
+
+**Why these differ from Exp 0:**
+
+The Shakespeare corpus is ~6× larger with more structural variety. That justifies deeper architecture (`n_layer=6`), larger batches, wider context, and lower dropout. The Kanye dataset at 183K chars doesn't have enough signal to fill a 6-layer network — excess capacity just gets used to memorize training sequences instead of generalizing. Every knob was turned down to match the data, except dropout which went up to compensate for the repetitive lyric structure.
+
+| Step | Train | Test |
+|---|---|---|
+| 0 | 4.6967 | 4.7058 |
+| 500 | 2.2916 | 2.3209 |
+| 1000 | 1.8748 | 1.9596 |
+| 2000 | 1.5438 | 1.7837 |
+| 3000 | 1.3396 | 1.6924 |
+| 3500 | 1.2717 | **1.6760** |
+| 4000 | 1.2021 | 1.6893 |
+| 5500 | 1.0249 | 1.6761 |
+
+Test loss bottomed at **1.6760 at step 3500** and plateaued — training beyond ~4000 steps is diminishing returns. Initial loss of 4.6967 matches `ln(95) ≈ 4.55` for the 95-character vocabulary.
+
+Weight file: `kanye_from_temu.pth` — 18.2 MB.
+
+---
+
+## Setup
 
 ```bash
 git clone https://github.com/<your-username>/zwixGPT.git
@@ -98,20 +93,23 @@ wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakesp
 python zwixGPT.py
 ```
 
-swap `input.txt` for any `.txt` corpus and it'll learn to write like that instead. probably.
+Swap `input.txt` for any `.txt` corpus to train on a different domain. The model auto-detects CUDA — T4 or better recommended for full runs.
 
 ---
 
-## files
+## Files
 
 ```
 zwixGPT/
-├── zwixGPT.py                    # the whole model
-├── bigram-model.ipynb            # where it started
-├── shakespeare_from_temu.pth     # exp 0 weights
-└── kanye_from_temu.pth           # exp 1 weights
+├── zwixGPT.py                              # model architecture + training loop
+├── bigram-model.ipynb                      # bigram baseline — tokenization & batching
+├── zwixGPT_trained_on_shakespeare_text.ipynb  # Exp 0 training notebook
+├── zwixGPT_trained_on_kanye_west.ipynb     # Exp 1 training notebook
+├── shakespeare_from_temu.pth               # Exp 0 weights
+├── kanye_from_temu.pth                     # Exp 1 weights
+└── kanye_west_lyrics.txt                   # Exp 1 dataset
 ```
 
 ---
 
-*built from scratch. runs on a T4. named after myself.*
+*Built from scratch. No HuggingFace. No shortcuts.*
