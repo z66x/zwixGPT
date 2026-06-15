@@ -86,7 +86,7 @@ Weight file: `kanye_from_temu.pth` — 18.2 MB.
 ## Setup
 
 ```bash
-git clone https://github.com/<your-username>/zwixGPT.git
+git clone https://github.com/z66x/zwixGPT.git
 cd zwixGPT
 pip install torch
 wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
@@ -105,7 +105,6 @@ zwixGPT/
 ├── bigram-model.ipynb                      # bigram baseline — tokenization & batching
 ├── zwixGPT_trained_on_shakespeare_text.ipynb  # Exp 0 training notebook
 ├── zwixGPT_trained_on_kanye_west.ipynb     # Exp 1 training notebook
-├── shakespeare_from_temu.pth               # Exp 0 weights
 ├── kanye_from_temu.pth                     # Exp 1 weights
 └── kanye_west_lyrics.txt                   # Exp 1 dataset
 ```
